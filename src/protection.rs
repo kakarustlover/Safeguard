@@ -221,7 +221,7 @@ pub fn apply_rank_command(
 pub fn can_ban_vip(group_id: i64, actor_id: i64) -> bool {
     matches!(
         db::get_rank(group_id, actor_id),
-        db::Rank::FirstOwner | db::Rank::Owner
+        Ok(db::Rank::FirstOwner) | Ok(db::Rank::Owner)
     )
 }
 
