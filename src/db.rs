@@ -1005,7 +1005,7 @@ pub fn remove_owner(group_id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn add_admin(group_id: i64, user_id: i64) -> Result<()> {
+pub fn add_group_admin(group_id: i64, user_id: i64) -> Result<()> {
     let conn = get_conn()?;
     conn.execute(
         "INSERT OR IGNORE INTO group_admins (group_id, user_id, added_at) VALUES (?1, ?2, ?3)",
@@ -1014,7 +1014,7 @@ pub fn add_admin(group_id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn remove_admin(group_id: i64, user_id: i64) -> Result<()> {
+pub fn remove_group_admin(group_id: i64, user_id: i64) -> Result<()> {
     let conn = get_conn()?;
     conn.execute(
         "DELETE FROM group_admins WHERE group_id = ?1 AND user_id = ?2",
