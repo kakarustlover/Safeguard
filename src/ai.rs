@@ -15,9 +15,6 @@ pub struct HistoryItem {
     pub content: String,
 }
 
-// چون بعد از تحویل جواب باید متن نهایی را برای ریچ داشته باشیم، حداقل طولی که
-// ریچ روی آن اجرا می‌شود اینجاست (طبق تصمیم: خود مدل تشخیص می‌دهد چقدر دست بزند،
-// ولی جواب‌های خیلی کوتاه اصلاً به ریچ نمی‌روند).
 pub const RICH_MIN_CHARS: usize = 100;
 
 // ================= Gemini =================
@@ -25,16 +22,12 @@ pub const RICH_MIN_CHARS: usize = 100;
 pub mod gemini {
     use super::*;
 
-    fn build_interactions_input(history: &[HistoryItem], system_prompt: Option<&str>) -> Vec<Value> {
+    /// ✅ **اصلاح‌شده**: `system_instruction` را به عنوان یک پارامتر سطح بالا برمی‌گرداند.
+    fn build_interactions_input(
+        history: &[HistoryItem],
+        system_prompt: Option<&str>,
+    ) -> (Vec<Value>, Option<String>) {
         let mut steps: Vec<Value> = Vec::new();
-        if let Some(sp) = system_prompt {
-            if !sp.trim().is_empty() {
-                steps.push(json!({
-                    "type": "system_instruction",
-                    "content": [{ "type": "text", "text": sp }]
-                }));
-            }
-        }
         for item in history {
             let step_type = if item.role == "assistant" { "model_output" } else { "user_input" };
             steps.push(json!({
@@ -42,10 +35,14 @@ pub mod gemini {
                 "content": [{ "type": "text", "text": item.content }]
             }));
         }
-        steps
+
+        let sys = system_prompt
+            .filter(|sp| !sp.trim().is_empty())
+            .map(|sp| sp.to_string());
+
+        (steps, sys)
     }
 
-    /// خطاهایی که نشان‌دهنده پر شدن سقف context/توکن هستند (برای فراموشی خودکار).
     pub fn is_context_full_error(err: &str) -> bool {
         let lower = err.to_lowercase();
         lower.contains("context")
@@ -67,13 +64,17 @@ pub mod gemini {
         placeholder_message_id: i64,
     ) -> Result<String, String> {
         let url = "https://generativelanguage.googleapis.com/v1beta/interactions";
-        let input = build_interactions_input(history, system_prompt);
-        let body = json!({
+        let (input, sys_instruction) = build_interactions_input(history, system_prompt);
+
+        let mut body = json!({
             "model": model,
             "input": input,
             "stream": true,
             "store": false
         });
+        if let Some(sys) = sys_instruction {
+            body["system_instruction"] = json!(sys);
+        }
 
         let resp = http
             .post(url)
@@ -151,7 +152,6 @@ pub mod gemini {
 
     pub const MODEL: &str = "gemini-3.5-flash-lite";
 
-    /// حالت عادی (پیوی): با fallback بین مدل‌های Gemini در صورت خطای موقتی.
     pub async fn stream(
         http: &reqwest::Client,
         tg: &TelegramClient,
@@ -190,7 +190,6 @@ pub mod gemini {
         Err(format!("همه مدل‌های جایگزین در دسترس نیستند. آخرین خطا: {}", last_error))
     }
 
-    /// حالت گروه: فقط مدل مشخص‌شده، بدون fallback.
     pub async fn stream_fixed(
         http: &reqwest::Client,
         tg: &TelegramClient,
@@ -208,8 +207,7 @@ pub mod gemini {
         Ok(StreamResult { full_text, model_used: model.to_string() })
     }
 
-    /// یک درخواست ساده و غیر-استریم به Gemini برای وظایف کمکی (مثل ریچ).
-    /// خروجی کامل را یک‌جا برمی‌گرداند، بدون ویرایش پیام تلگرام.
+    /// ✅ **اصلاح‌شده**: پاسخ را از فیلد `steps` (نه `output`) می‌خواند.
     pub async fn complete_once(
         http: &reqwest::Client,
         gemini_api_key: &str,
@@ -217,24 +215,20 @@ pub mod gemini {
         user_text: &str,
     ) -> Result<String, String> {
         let url = "https://generativelanguage.googleapis.com/v1beta/interactions";
-        let mut steps: Vec<Value> = Vec::new();
-        if let Some(sp) = system_prompt {
-            steps.push(json!({
-                "type": "system_instruction",
-                "content": [{ "type": "text", "text": sp }]
-            }));
-        }
-        steps.push(json!({
-            "type": "user_input",
-            "content": [{ "type": "text", "text": user_text }]
-        }));
+        let (input, sys_instruction) = build_interactions_input(
+            &[HistoryItem { role: "user".into(), content: user_text.into() }],
+            system_prompt,
+        );
 
-        let body = json!({
+        let mut body = json!({
             "model": MODEL,
-            "input": steps,
+            "input": input,
             "stream": false,
             "store": false
         });
+        if let Some(sys) = sys_instruction {
+            body["system_instruction"] = json!(sys);
+        }
 
         let resp = http
             .post(url)
@@ -253,10 +247,10 @@ pub mod gemini {
 
         let v: Value = resp.json().await.map_err(|e| format!("خطا در پارس پاسخ Gemini: {}", e))?;
 
-        // خروجی غیر-استریم Interactions API: آخرین step از نوع model_output را برمی‌داریم
+        // ✅ **اصلاح‌شده**: استفاده از "steps" به جای "output"
         let mut result = String::new();
-        if let Some(output) = v["output"].as_array() {
-            for step in output {
+        if let Some(steps) = v["steps"].as_array() {
+            for step in steps {
                 if step["type"] == "model_output" {
                     if let Some(content) = step["content"].as_array() {
                         for c in content {
@@ -368,8 +362,8 @@ pub mod groq {
     }
 }
 
-// ================= DeepSeek (Orca Router) — دست‌نخورده، مسئولیت کاربر =================
-// این ماژول عیناً از main.rs قدیمی منتقل شده. طبق توافق، تغییر یا توسعه‌اش با خود کاربر است.
+// ================= DeepSeek (Orca Router) =================
+
 pub mod deepseek {
     use super::*;
 
@@ -459,15 +453,10 @@ pub mod deepseek {
 
 // ================= فراموشی خودکار حافظه =================
 
-/// یک تابع عمومی که هر ارسال‌کننده (Gemini/Groq) را با منطق "اگه خطای پر شدن حافظه خورد،
-/// نصف قدیمی‌ترین پیام‌ها رو کنار بذار و دوباره امتحان کن" می‌پیچد.
-/// history باید از قدیم به جدید مرتب باشد (index 0 = قدیمی‌ترین).
-/// در صورت فراموشی، پیام‌های حذف‌شده در دیتابیس با `forgotten_before_id` علامت می‌خورند
-/// (نه واقعاً حذف)، طبق تصمیم قبلی.
 pub async fn run_with_auto_forget<F, Fut>(
     chat_id_for_db: i64,
     is_group: bool,
-    mut history: Vec<(String, String, i64)>, // (role, content, db_row_id)
+    mut history: Vec<(String, String, i64)>,
     mut attempt: F,
 ) -> Result<StreamResult, String>
 where
@@ -487,7 +476,6 @@ where
                 if !is_memory_error || history.len() <= 1 {
                     return Err(e);
                 }
-                // نصف قدیمی‌ترین پیام‌ها را کنار می‌گذاریم (از ابتدای بردار)
                 let cut = (history.len() / 2).max(1);
                 let forgotten: Vec<i64> = history.drain(0..cut).map(|(_, _, id)| id).collect();
 
@@ -514,7 +502,6 @@ Rules:
 - Never add commentary, explanations, or anything not in the original text.
 - Output ONLY the reformatted text in Markdown, nothing else."#;
 
-/// عدد اعداد و لینک‌ها را از یک متن استخراج می‌کند تا بشود بعد از ریچ چک کرد چیزی گم نشده.
 fn extract_signature(text: &str) -> Vec<String> {
     let mut sig = Vec::new();
     for word in text.split_whitespace() {
@@ -529,7 +516,6 @@ fn extract_signature(text: &str) -> Vec<String> {
     sig
 }
 
-/// چک می‌کند که خروجی ریچ همه اعداد/لینک‌ها/یوزرنیم‌های متن اصلی را حفظ کرده باشد.
 fn content_preserved(original: &str, polished: &str) -> bool {
     let orig_sig = extract_signature(original);
     let new_sig = extract_signature(polished);
@@ -541,15 +527,13 @@ fn content_preserved(original: &str, polished: &str) -> bool {
     true
 }
 
-/// جواب مدل را می‌گیرد، اگر بیش از حد آستانه بود با Gemini مرتب می‌کند، و در صورت موفقیت
-/// و حفظ محتوا، پیام تلگرام را با Rich Message جایگزین می‌کند. در هر خطا یا از‌دست‌رفتن محتوا،
-/// همان متن خام دست‌نخورده باقی می‌ماند (این تابع چیزی throw نمی‌کند، فقط best-effort است).
+/// ✅ **اصلاح‌شده**: پیام Rich جدید می‌فرستد و پیام قدیمی را حذف می‌کند (رویکرد امن‌تر).
 pub async fn polish_and_send_rich(
     http: &reqwest::Client,
     tg: &TelegramClient,
     gemini_api_key: &str,
     chat_id: i64,
-    message_id: i64,
+    old_message_id: i64,
     original_text: &str,
 ) {
     if original_text.chars().count() <= RICH_MIN_CHARS {
@@ -565,5 +549,10 @@ pub async fn polish_and_send_rich(
         return; // چیزی گم شده: متن خام می‌ماند
     }
 
-    let _ = tg.edit_rich_message(chat_id, message_id, &polished).await;
+    // پیام Rich جدید بفرست
+    let result = tg.send_rich_message(chat_id, None, &polished, None).await;
+    if result.is_ok() {
+        // پیام قدیمی را حذف کن
+        let _ = tg.delete_message(chat_id, old_message_id).await;
+    }
 }
