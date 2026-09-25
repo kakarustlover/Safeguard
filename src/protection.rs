@@ -1,4 +1,3 @@
-use crate::client::TelegramClient;
 use crate::db;
 use serde_json::Value;
 
@@ -144,7 +143,7 @@ pub fn apply_rank_command(
             if !matches!(sender_rank, FirstOwner | Owner) {
                 return RankActionResult::Denied("Only owners can promote members to bot admin.".to_string());
             }
-            let _ = db::add_admin(group_id, target_id);
+            let _ = db::add_group_admin(group_id, target_id);
             RankActionResult::Ok(format!("{} has been added to the bot admins list.", target_name))
         }
         RankCommand::MakeOwner => {
@@ -176,14 +175,14 @@ pub fn apply_rank_command(
         RankCommand::RemoveAdmin => {
             match sender_rank {
                 FirstOwner => {
-                    let _ = db::remove_admin(group_id, target_id);
+                    let _ = db::remove_group_admin(group_id, target_id);
                     RankActionResult::Ok(format!("{} is no longer a bot admin.", target_name))
                 }
                 Owner => {
                     if target_rank != Admin {
                         return RankActionResult::Denied("You can only use this on bot admins.".to_string());
                     }
-                    let _ = db::remove_admin(group_id, target_id);
+                    let _ = db::remove_group_admin(group_id, target_id);
                     RankActionResult::Ok(format!("{} is no longer a bot admin.", target_name))
                 }
                 _ => RankActionResult::Denied("You don't have permission to use this command.".to_string()),
@@ -197,7 +196,7 @@ pub fn apply_rank_command(
                 return RankActionResult::Denied("The first owner cannot be demoted.".to_string());
             }
             let _ = db::remove_owner(group_id, target_id);
-            let _ = db::add_admin(group_id, target_id);
+            let _ = db::add_group_admin(group_id, target_id);
             RankActionResult::Ok(format!("{} has been demoted from owner to admin.", target_name))
         }
         RankCommand::Vip => {
@@ -308,4 +307,5 @@ pub fn should_delete(group_id: i64, user_id: i64, message: &Value) -> Option<&'s
         }
     }
     None
-}
+    }
+         
