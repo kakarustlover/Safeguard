@@ -48,7 +48,6 @@ pub fn now_ts() -> i64 {
 
 static DB_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// باید یک‌بار در ابتدای main() صدا زده شود تا مسیر فایل دیتابیس (مثلاً از env یا Volume Railway) تنظیم شود.
 pub fn set_db_path(path: String) {
     let _ = DB_PATH.set(path);
 }
@@ -128,7 +127,6 @@ pub fn init_db(owner_id: i64, default_group_model: &str) -> Result<()> {
         [],
     )?;
 
-    // پیام‌های فراموش‌شده حذف نمی‌شوند، فقط علامت می‌خورند (برای /see و بازبینی بعدی)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS forgotten_markers (
             scope_id INTEGER NOT NULL,
@@ -204,7 +202,6 @@ pub fn init_db(owner_id: i64, default_group_model: &str) -> Result<()> {
         [],
     )?;
 
-    // ---------- Protection: rank system (per group) ----------
     conn.execute(
         "CREATE TABLE IF NOT EXISTS group_owners (
             group_id INTEGER NOT NULL,
@@ -236,7 +233,6 @@ pub fn init_db(owner_id: i64, default_group_model: &str) -> Result<()> {
         [],
     )?;
 
-    // ---------- Protection: group-wide locks ----------
     conn.execute(
         "CREATE TABLE IF NOT EXISTS group_locks (
             group_id INTEGER NOT NULL,
@@ -246,7 +242,6 @@ pub fn init_db(owner_id: i64, default_group_model: &str) -> Result<()> {
         [],
     )?;
 
-    // ---------- Protection: per-user restrictions (optionally timed) ----------
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_restrictions (
             group_id INTEGER NOT NULL,
@@ -275,7 +270,6 @@ pub fn init_db(owner_id: i64, default_group_model: &str) -> Result<()> {
         "INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('system_prompt_enabled', '0')",
         [],
     )?;
-    // نمایش/عدم نمایش مدل‌ها (پیش‌فرض: همه روشن)
     conn.execute(
         "INSERT OR IGNORE INTO bot_settings (key, value) VALUES ('show_gemini', '1')",
         [],
@@ -454,7 +448,6 @@ pub fn add_message(chat_id: i64, role: &str, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// id آخرین پیام ثبت‌شده در این چت را برمی‌گرداند (برای استفاده در فراموشی خودکار).
 pub fn last_message_id(chat_id: i64) -> Result<i64> {
     let conn = get_conn()?;
     let id: i64 = conn.query_row(
@@ -477,7 +470,6 @@ pub fn get_history(chat_id: i64) -> Result<Vec<Message>> {
     rows.collect()
 }
 
-/// مثل get_history ولی id هر ردیف را هم برمی‌گرداند (لازم برای فراموشی خودکار).
 pub fn get_history_with_ids(chat_id: i64) -> Result<Vec<(String, String, i64)>> {
     let conn = get_conn()?;
     let cutoff = get_forgotten_cutoff(chat_id, false)?;
@@ -510,7 +502,6 @@ pub fn add_group_message(user_id: i64, role: &str, content: &str) -> Result<()> 
     Ok(())
 }
 
-/// id آخرین پیام گروهی ثبت‌شده برای این کاربر را برمی‌گرداند.
 pub fn last_group_message_id(user_id: i64) -> Result<i64> {
     let conn = get_conn()?;
     let id: i64 = conn.query_row(
@@ -533,7 +524,6 @@ pub fn get_group_history(user_id: i64) -> Result<Vec<Message>> {
     rows.collect()
 }
 
-/// مثل get_group_history ولی id هر ردیف را هم برمی‌گرداند.
 pub fn get_group_history_with_ids(user_id: i64) -> Result<Vec<(String, String, i64)>> {
     let conn = get_conn()?;
     let cutoff = get_forgotten_cutoff(user_id, true)?;
@@ -561,7 +551,6 @@ fn get_forgotten_cutoff(scope_id: i64, is_group: bool) -> Result<i64> {
     Ok(val.unwrap_or(0))
 }
 
-/// همه پیام‌ها تا این id (شامل خودش) را "فراموش‌شده" علامت می‌زند (بدون حذف واقعی از دیتابیس).
 pub fn mark_forgotten_before(scope_id: i64, is_group: bool, last_forgotten_id: i64) -> Result<()> {
     let conn = get_conn()?;
     let is_group_i = if is_group { 1 } else { 0 };
@@ -808,6 +797,16 @@ pub fn find_group_by_ref(input: &str) -> Result<Option<i64>> {
     Ok(id)
 }
 
+pub fn get_group_join_link(telegram_chat_id: i64) -> Result<Option<String>> {
+    let conn = get_conn()?;
+    let mut stmt = conn.prepare("SELECT join_link FROM groups WHERE telegram_chat_id = ?1")?;
+    let link: Option<String> = stmt
+        .query_row(params![telegram_chat_id], |row| row.get(0))
+        .ok()
+        .flatten();
+    Ok(link)
+}
+
 // ---------- ممبرای گروه ----------
 
 pub fn touch_group_member(
@@ -908,7 +907,6 @@ pub fn list_group_users() -> Result<Vec<i64>> {
 
 // ================= Protection: Rank System =================
 
-/// نقش یک کاربر در گروه
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rank {
     FirstOwner,
@@ -918,8 +916,6 @@ pub enum Rank {
     Regular,
 }
 
-/// اولین مالک گروه را ثبت می‌کند (وقتی ربات به گروه اضافه می‌شود). اگر از قبل یک first_owner
-/// برای این گروه ثبت شده باشد، کاری انجام نمی‌دهد (idempotent).
 pub fn ensure_first_owner(group_id: i64, user_id: i64) -> Result<()> {
     let conn = get_conn()?;
     let exists: bool = {
@@ -969,7 +965,6 @@ pub fn is_vip(group_id: i64, user_id: i64) -> Result<bool> {
     stmt.exists(params![group_id, user_id])
 }
 
-/// رتبه فعلی یک کاربر در گروه را برمی‌گرداند (بالاترین رتبه‌ای که دارد)
 pub fn get_rank(group_id: i64, user_id: i64) -> Result<Rank> {
     if is_first_owner(group_id, user_id)? {
         return Ok(Rank::FirstOwner);
@@ -995,7 +990,6 @@ pub fn add_owner(group_id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// مالک را کامل حذف می‌کند (اولین مالک هرگز نباید با این تابع حذف شود؛ فراخوان باید قبلش چک کند)
 pub fn remove_owner(group_id: i64, user_id: i64) -> Result<()> {
     let conn = get_conn()?;
     conn.execute(
@@ -1041,7 +1035,6 @@ pub fn remove_vip(group_id: i64, user_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// یک کاربر را کامل به "عادی" برمی‌گرداند: هم از ادمین هم از مالک (اگر مالک اول نباشد) خارج می‌کند
 pub fn demote_to_regular(group_id: i64, user_id: i64) -> Result<()> {
     let conn = get_conn()?;
     conn.execute(
@@ -1081,7 +1074,6 @@ pub fn is_group_lock_enabled(group_id: i64, lock_type: &str) -> Result<bool> {
     stmt.exists(params![group_id, lock_type])
 }
 
-/// یک محدودیت فردی ثبت می‌کند. until = None یعنی دائمی.
 pub fn set_user_restriction(
     group_id: i64,
     user_id: i64,
@@ -1105,12 +1097,12 @@ pub fn clear_user_restriction(group_id: i64, user_id: i64, lock_type: &str) -> R
     Ok(())
 }
 
-/// چک می‌کند که آیا کاربر الان برای این نوع قفل محدود است (چه با قانون کلی گروه چه با محدودیت فردی).
-/// محدودیت‌های منقضی‌شده به‌طور خودکار نادیده گرفته می‌شوند (پاک‌سازی lazy).
+/// ✅ **اصلاح‌شده**: مالکین، ادمین‌ها و اعضای ویژه از قفل‌ها معاف هستند.
 pub fn is_user_restricted(group_id: i64, user_id: i64, lock_type: &str) -> Result<bool> {
-    // VIP از همه قفل‌ها معاف است
-    if is_vip(group_id, user_id)? {
-        return Ok(false);
+    // 🔑 ابتدا رتبه کاربر را بررسی می‌کنیم
+    let rank = get_rank(group_id, user_id)?;
+    if matches!(rank, Rank::FirstOwner | Rank::Owner | Rank::Admin | Rank::Vip) {
+        return Ok(false); // این کاربران از قفل‌ها معاف هستند
     }
 
     // قانون کلی گروه
@@ -1135,7 +1127,6 @@ pub fn is_user_restricted(group_id: i64, user_id: i64, lock_type: &str) -> Resul
             if until > now_ts() {
                 Ok(true)
             } else {
-                // منقضی شده، پاکش می‌کنیم
                 let _ = clear_user_restriction(group_id, user_id, lock_type);
                 Ok(false)
             }
