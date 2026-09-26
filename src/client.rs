@@ -111,6 +111,43 @@ impl TelegramClient {
         resp.json::<Value>().await
     }
 
+    /// کاربر را از گروه اخراج و مسدود می‌کند (banChatMember). ربات باید ادمین گروه با دسترسی
+    /// "Ban users" باشد وگرنه تلگرام خطا برمی‌گرداند.
+    pub async fn ban_chat_member(&self, chat_id: i64, user_id: i64) -> reqwest::Result<Value> {
+        let url = self.api_url("banChatMember");
+        let body = json!({ "chat_id": chat_id, "user_id": user_id });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        resp.json::<Value>().await
+    }
+
+    /// کاربر را از لیست بن‌شدگان گروه خارج می‌کند (اجازه ورود دوباره می‌دهد).
+    pub async fn unban_chat_member(&self, chat_id: i64, user_id: i64) -> reqwest::Result<Value> {
+        let url = self.api_url("unbanChatMember");
+        let body = json!({ "chat_id": chat_id, "user_id": user_id, "only_if_banned": true });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        resp.json::<Value>().await
+    }
+
+    /// کاربر را در گروه محدود می‌کند (نمی‌تواند پیام بفرستد) تا زمان مشخص (unix timestamp) یا برای همیشه (until=None).
+    pub async fn restrict_chat_member(
+        &self,
+        chat_id: i64,
+        user_id: i64,
+        until_unix: Option<i64>,
+    ) -> reqwest::Result<Value> {
+        let url = self.api_url("restrictChatMember");
+        let mut body = json!({
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "permissions": { "can_send_messages": false }
+        });
+        if let Some(u) = until_unix {
+            body["until_date"] = json!(u);
+        }
+        let resp = self.http.post(&url).json(&body).send().await?;
+        resp.json::<Value>().await
+    }
+
     pub async fn send_message_with_emojis(
         &self,
         chat_id: i64,
@@ -365,7 +402,7 @@ impl TelegramClient {
 
     /// یک پیام تازه را به‌صورت Rich Message می‌فرستد. اگر تلگرام Markdown را رد کند،
     /// به HTML خام (escape‌شده) و در نهایت به متن ساده برمی‌گردد تا پیام هرگز گم نشود.
-    /// دکمه‌های inline اختیاری‌اند.
+    /// دکمه‌های inline اختیاری‌اند. برای ایموجی سفارشی یا جدول HTML واقعی، از send_rich_html استفاده کن.
     pub async fn send_rich_message(
         &self,
         chat_id: i64,
@@ -374,24 +411,7 @@ impl TelegramClient {
         buttons: Option<&[Vec<InlineButton<'_>>]>,
     ) -> reqwest::Result<Value> {
         let is_rtl = Self::detect_rtl(markdown);
-        let keyboard = buttons.map(|rows| {
-            let kb: Vec<Vec<Value>> = rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|btn| {
-                            let mut b = json!({ "text": btn.text });
-                            match btn.action {
-                                InlineAction::Url(u) => b["url"] = json!(u),
-                                InlineAction::Callback(c) => b["callback_data"] = json!(c),
-                            }
-                            b
-                        })
-                        .collect()
-                })
-                .collect();
-            json!({ "inline_keyboard": kb })
-        });
+        let keyboard = build_inline_keyboard(buttons);
 
         // تلاش ۱: sendRichMessage با Markdown
         let url = self.api_url("sendRichMessage");
@@ -443,6 +463,58 @@ impl TelegramClient {
         let mut body_plain = json!({
             "chat_id": chat_id,
             "text": markdown
+        });
+        if let Some(mid) = reply_to_message_id {
+            body_plain["reply_parameters"] = json!({ "message_id": mid });
+        }
+        if let Some(kb) = &keyboard {
+            body_plain["reply_markup"] = kb.clone();
+        }
+        let resp3 = self.http.post(&plain_url).json(&body_plain).send().await?;
+        resp3.json::<Value>().await
+    }
+
+    /// یک پیام Rich را مستقیم با HTML واقعی می‌فرستد (نه Markdown). لازم برای:
+    /// - ایموجی سفارشی: باید <tg-emoji emoji-id="...">🎭</tg-emoji> در html باشد
+    /// - جدول واقعی: <table><tr><td>...</td></tr></table>
+    /// html باید از قبل توسط فراخوان‌کننده درست ساخته شده باشد (خودش escape را مدیریت می‌کند).
+    /// اگر HTML رد شد، به متن ساده (بدون تگ) برمی‌گردد تا پیام گم نشود.
+    pub async fn send_rich_html(
+        &self,
+        chat_id: i64,
+        reply_to_message_id: Option<i64>,
+        html: &str,
+        plain_fallback: &str,
+        buttons: Option<&[Vec<InlineButton<'_>>]>,
+    ) -> reqwest::Result<Value> {
+        let is_rtl = Self::detect_rtl(plain_fallback);
+        let keyboard = build_inline_keyboard(buttons);
+
+        let url = self.api_url("sendRichMessage");
+        let mut body = json!({
+            "chat_id": chat_id,
+            "rich_message": {
+                "html": html,
+                "is_rtl": is_rtl
+            }
+        });
+        if let Some(mid) = reply_to_message_id {
+            body["reply_parameters"] = json!({ "message_id": mid });
+        }
+        if let Some(kb) = &keyboard {
+            body["reply_markup"] = kb.clone();
+        }
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let v: Value = resp.json().await?;
+        if v["ok"].as_bool() == Some(true) {
+            return Ok(v);
+        }
+
+        // fallback: متن ساده معمولی
+        let plain_url = self.api_url("sendMessage");
+        let mut body_plain = json!({
+            "chat_id": chat_id,
+            "text": plain_fallback
         });
         if let Some(mid) = reply_to_message_id {
             body_plain["reply_parameters"] = json!({ "message_id": mid });
@@ -516,6 +588,32 @@ pub enum InlineAction<'a> {
 
 pub struct InlineButton<'a> {
     pub text: &'a str,
+    /// یکی از "primary" | "success" | "danger" (طبق Bot API 9.4+). مقدار دیگر یا خالی یعنی رنگ پیش‌فرض.
     pub color: &'a str,
     pub action: InlineAction<'a>,
+}
+
+/// لیست دکمه‌ها را به ساختار reply_markup تلگرام تبدیل می‌کند، با اعمال رنگ (style) روی هر دکمه.
+fn build_inline_keyboard(buttons: Option<&[Vec<InlineButton<'_>>]>) -> Option<Value> {
+    buttons.map(|rows| {
+        let kb: Vec<Vec<Value>> = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|btn| {
+                        let mut b = json!({ "text": btn.text });
+                        match btn.action {
+                            InlineAction::Url(u) => b["url"] = json!(u),
+                            InlineAction::Callback(c) => b["callback_data"] = json!(c),
+                        }
+                        if matches!(btn.color, "primary" | "success" | "danger") {
+                            b["style"] = json!(btn.color);
+                        }
+                        b
+                    })
+                    .collect()
+            })
+            .collect();
+        json!({ "inline_keyboard": kb })
+    })
 }
