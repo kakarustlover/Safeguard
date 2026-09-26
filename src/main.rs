@@ -1508,6 +1508,8 @@ async fn handle_group_message(
         None => return,
     };
 
+    let reply_target = message.get("reply_to_message");
+
     // ---------- ban/unban گروهی: دستور متنی با ریپلای، طبق همان فلسفه سرعت ----------
     if let Some(target_msg) = reply_target {
         let bare = text_raw.trim().trim_start_matches('/').to_lowercase();
@@ -1564,7 +1566,6 @@ async fn handle_group_message(
     }
 
     // ---------- سیستم مقام: دستورهایی که باید ریپلای روی یک نفر باشند ----------
-    let reply_target = message.get("reply_to_message");
     if let Some(target_msg) = reply_target {
         if let Some(rc) = protection::resolve_rank_command(text_raw) {
             let target_id = target_msg["from"]["id"].as_i64().unwrap_or(0);
