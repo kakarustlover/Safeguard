@@ -224,6 +224,28 @@ pub fn can_ban_vip(group_id: i64, actor_id: i64) -> bool {
     )
 }
 
+/// آیا این کاربر اجازه دارد ban/mute/warn روی یک هدف مشخص اجرا کند؟
+/// قانون: مالکین (اول و بعدی) و ادمین‌های ربات می‌توانند مجازات کنند، اما هیچ‌کس نمی‌تواند
+/// روی هم‌رتبه یا بالاتر از خودش این کار را بکند، و فرد VIP فقط با can_ban_vip قابل‌بن است.
+pub fn can_moderate(group_id: i64, actor_id: i64, target_id: i64) -> bool {
+    let actor_rank = match db::get_rank(group_id, actor_id) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let target_rank = match db::get_rank(group_id, target_id) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    use db::Rank::*;
+    match actor_rank {
+        FirstOwner => !matches!(target_rank, FirstOwner),
+        Owner => matches!(target_rank, Regular | Vip),
+        Admin => matches!(target_rank, Regular),
+        Vip | Regular => false,
+    }
+}
+
 // ================= پیام "بات" -> "بله" =================
 
 /// چک می‌کند که آیا متن پیام (بعد از trim) دقیقاً کلمه "بات" است.
@@ -307,5 +329,5 @@ pub fn should_delete(group_id: i64, user_id: i64, message: &Value) -> Option<&'s
         }
     }
     None
-    }
-         
+            }
+                                 
