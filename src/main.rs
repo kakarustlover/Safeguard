@@ -4,7 +4,7 @@ mod ai;
 mod protection;
 
 use mimalloc::MiMalloc;
-use serde_json::{json, Value};
+use serde_json::Value;
 use client::{EmojiText, InlineAction, InlineButton, TelegramClient};
 
 #[global_allocator]
@@ -150,11 +150,13 @@ fn db_path() -> &'static str {
     DB_PATH_CELL.get_or_init(|| env_var_or("DB_PATH", "bot.db"))
 }
 
+// این دو مقدار ثابت باقی می‌مانند چون بخشی از منطق برنامه‌اند، نه رازها
 const DEFAULT_GROUP_MODEL: &str = "gemini-3.5-flash-lite";
 
 const EMOJI_GUIDE_HINT: &str = "5242540542964831316";
 const EMOJI_THINKING: &str = "5330257244166572322";
 
+// ---------- ایموجی‌های پریمیوم SafeGuard ----------
 const EMOJI_CLAUDE: &str = "5244474931810438131";
 const EMOJI_GEMINI: &str = "5246819764910727208";
 const EMOJI_GROK: &str = "5247179567206016466";
@@ -163,6 +165,8 @@ const EMOJI_DARTH_VADER: &str = "5235488215254736349";
 const EMOJI_STAR: &str = "5246727573437723110";
 const EMOJI_WHALE_DEEPSEEK: &str = "5832498002362638135";
 const EMOJI_LIGHTNING: &str = "5774172509691715895";
+
+// ---------- مدل‌ها ----------
 
 const BTN_MODEL_35_LITE: &str = "🟢 Gemini 3.5 Flash Lite";
 const BTN_MODEL_DEEPSEEK: &str = "🔵 DeepSeek V4 Flash";
@@ -271,6 +275,7 @@ fn resolve_target_user_id(input: &str) -> Option<i64> {
     db::find_user_id_by_username(input).unwrap_or(None)
 }
 
+// انتخاب مدل جایگزین وقتی مدل درخواستی خاموشه
 fn pick_alternative_model(requested: &str) -> &'static str {
     if requested.contains("deepseek") {
         if db::is_model_shown("gemini-3.5-flash-lite") {
@@ -396,6 +401,7 @@ async fn handle_callback_query(tg: &TelegramClient, cb: Value) {
     let chat_id = msg["chat"]["id"].as_i64().unwrap_or(0);
     let message_id = msg["message_id"].as_i64().unwrap_or(0);
 
+    // فرمت جدید: model:<model_key>:<owner_user_id>
     if data.starts_with("model:") {
         let parts: Vec<&str> = data.split(':').collect();
         if parts.len() != 3 {
@@ -411,6 +417,7 @@ async fn handle_callback_query(tg: &TelegramClient, cb: Value) {
             }
         };
 
+        // اگه کلیک‌کننده ≠ صاحب اصلی دکمه‌ها
         if clicker_id != owner_id {
             let _ = tg.answer_callback_query(cb_id).await;
             let _ = tg
@@ -431,6 +438,7 @@ async fn handle_callback_query(tg: &TelegramClient, cb: Value) {
             _ => return,
         };
 
+        // چک: اگه مدل خاموشه
         if !db::is_model_shown(model_id) {
             let alt = pick_alternative_model(model_id);
             let _ = db::set_user_group_model(clicker_id, alt);
@@ -453,14 +461,13 @@ async fn handle_callback_query(tg: &TelegramClient, cb: Value) {
         return;
     }
 
-    // ✅ **اصلاح‌شده**: بازگشت به منوی اصلی، نه پیام معرفی قدیمی
+    // فرمت /chat جدید: chatmodel:<gemini|groq|deepseek|back>
     if let Some(model_key) = data.strip_prefix("chatmodel:") {
         let _ = tg.answer_callback_query(cb_id).await;
 
         if model_key == "back" {
             let _ = db::set_stage(chat_id, "root");
-            let parts = back_to_root_parts();
-            let _ = tg.send_model_keyboard(chat_id, &parts, MAIN_MENU).await;
+            send_start_rich_message(tg, chat_id, 0).await;
             return;
         }
 
@@ -477,6 +484,7 @@ async fn handle_callback_query(tg: &TelegramClient, cb: Value) {
             if let Some(active) = &active {
                 let _ = db::set_chat_model(active.id, alt);
             }
+            let _ = db::set_stage(chat_id, "chat_active");
             let new_text = format!(
                 "⚠️ *{}* موقتاً در دسترس نیست.\n\nبه‌جاش مدل *{}* برات فعال شد.",
                 model_display_name(model_id),
@@ -516,6 +524,7 @@ async fn handle_my_chat_member(tg: &TelegramClient, mcm: Value) {
     }
 
     let new_status = mcm["new_chat_member"]["status"].as_str().unwrap_or("");
+    // فقط وقتی ربات تازه عضو/ادمین شده (نه وقتی که خارج/بن شده)
     if new_status != "member" && new_status != "administrator" {
         return;
     }
@@ -534,27 +543,28 @@ async fn handle_my_chat_member(tg: &TelegramClient, mcm: Value) {
 // ============ /start: پیام Rich معرفی SafeGuard ============
 
 async fn send_start_rich_message(tg: &TelegramClient, chat_id: i64, reply_to: i64) {
-    // ✅ **اصلاح‌شده**: استفاده از فرمت `![alt](tg://emoji?id=...)` برای ایموجی‌های سفارشی
-    // ✅ **اصلاح‌شده**: جدول با سرستون‌های مشخص برای رندر صحیح
-    let text = format!(
-        "# I'm SafeGuard ![{alt}](tg://emoji?id={darth})\n\n\
-         **Your Smart Group Protector, Powered by artificial intelligence** \
-         ![{alt}](tg://emoji?id={claude})![{alt}](tg://emoji?id={gemini})![{alt}](tg://emoji?id={grok})\n\n\
-         ## What I can do?\n\n\
-         | Feature | Description |\n\
-         |---|---|\n\
-         | **AI Moderation** | Detect and Remove Explicit or Inappropriate Content using AI |\n\
-         | **Spam Blocking** | Block spam, flood, and unwanted links automatically |\n\
-         | **AI Chat** | Chat with Powerful AI Models Right Inside the Group |\n\
-         | **Member Control** | Warn, Mute, Ban, and Beyond |\n\n\
-         **You can also Chat with AI Right here** ![{alt}](tg://emoji?id={chatgpt}) Just send /chat",
-        alt = "🎭",
-        darth = EMOJI_DARTH_VADER,
-        claude = EMOJI_CLAUDE,
-        gemini = EMOJI_GEMINI,
-        grok = EMOJI_GROK,
-        chatgpt = EMOJI_CHATGPT,
+    let emoji = |id: &str, fallback: &str| format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", id, fallback);
+
+    let html = format!(
+        "<b>I'm SafeGuard {darth}</b>\n\n\
+         <b>Your Smart Group Protector, Powered by artificial intelligence</b> {claude}{gemini}{grok}\n\n\
+         <b>What i can do?</b>\n\n\
+         <table>\n\
+         <tr><td>Detect and Remove Explicit or Inappropriate Content using AI</td></tr>\n\
+         <tr><td>Block spam, flood, and unwanted links automatically</td></tr>\n\
+         <tr><td>Chat with Powerful AI Models Right Inside the Group</td></tr>\n\
+         <tr><td>Full Member Control: Warn, Mute, Ban, and Beyond</td></tr>\n\
+         </table>\n\n\
+         <b>You can also Chat with AI Right here</b> {chatgpt}\n\
+         Just send /chat",
+        darth = emoji(EMOJI_DARTH_VADER, "🎭"),
+        claude = emoji(EMOJI_CLAUDE, "🟠"),
+        gemini = emoji(EMOJI_GEMINI, "🔷"),
+        grok = emoji(EMOJI_GROK, "⚫"),
+        chatgpt = emoji(EMOJI_CHATGPT, "🌀"),
     );
+
+    let plain_fallback = "I'm SafeGuard\n\nYour Smart Group Protector, Powered by artificial intelligence\n\nWhat i can do?\n\n- Detect and Remove Explicit or Inappropriate Content using AI\n- Block spam, flood, and unwanted links automatically\n- Chat with Powerful AI Models Right Inside the Group\n- Full Member Control: Warn, Mute, Ban, and Beyond\n\nYou can also Chat with AI Right here\nJust send /chat";
 
     let group_link = format!("https://t.me/{}?startgroup=true", bot_username().trim_start_matches('@'));
     let buttons = vec![vec![InlineButton {
@@ -564,29 +574,33 @@ async fn send_start_rich_message(tg: &TelegramClient, chat_id: i64, reply_to: i6
     }]];
 
     let reply_id = if reply_to > 0 { Some(reply_to) } else { None };
-    let _ = tg.send_rich_message(chat_id, reply_id, &text, Some(&buttons)).await;
+    let _ = tg.send_rich_html(chat_id, reply_id, &html, plain_fallback, Some(&buttons)).await;
 }
 
 // ============ /chat: منوی انتخاب مدل با Rich Message ============
 
 async fn send_chat_model_rich_message(tg: &TelegramClient, chat_id: i64) {
-    let text = format!(
-        "# Pick Your AI ![{alt}](tg://emoji?id={lightning})\n\n\
+    let emoji = |id: &str, fallback: &str| format!("<tg-emoji emoji-id=\"{}\">{}</tg-emoji>", id, fallback);
+    let star = emoji(EMOJI_STAR, "⭐");
+
+    let html = format!(
+        "<b>Pick Your AI {lightning}</b>\n\n\
          Every Model has its own Strengths — choose the one that fits what you need.\n\n\
-         ## MODEL\n\n\
-         | Model | Description |\n\
-         |---|---|\n\
-         | Gemini ![{alt}](tg://emoji?id={gemini}) | Quick, everyday chats ![{alt}](tg://emoji?id={star}) |\n\
-         | ChatGPT ![{alt}](tg://emoji?id={chatgpt}) | Speed over precision ![{alt}](tg://emoji?id={star}) |\n\
-         | DeepSeek ![{alt}](tg://emoji?id={whale}) | Fast and Powerful model ![{alt}](tg://emoji?id={star}) |\n\n\
-         **Tap a model to begin →**",
-        alt = "🎭",
-        lightning = EMOJI_LIGHTNING,
-        gemini = EMOJI_GEMINI,
-        chatgpt = EMOJI_CHATGPT,
-        whale = EMOJI_WHALE_DEEPSEEK,
-        star = EMOJI_STAR,
+         <b>MODEL</b>\n\n\
+         <table>\n\
+         <tr><td>Gemini {gemini}</td><td>Quick, everyday chats {star}</td></tr>\n\
+         <tr><td>ChatGPT {chatgpt}</td><td>Speed over precision {star}</td></tr>\n\
+         <tr><td>DeepSeek {whale}</td><td>Fast and Powerful model {star}</td></tr>\n\
+         </table>\n\n\
+         <b>Tap a model to begin →</b>",
+        lightning = emoji(EMOJI_LIGHTNING, "⚡"),
+        gemini = emoji(EMOJI_GEMINI, "🔷"),
+        chatgpt = emoji(EMOJI_CHATGPT, "🌀"),
+        whale = emoji(EMOJI_WHALE_DEEPSEEK, "🐋"),
+        star = star,
     );
+
+    let plain_fallback = "Pick Your AI\n\nEvery Model has its own Strengths — choose the one that fits what you need.\n\nMODEL\nGemini — Quick, everyday chats\nChatGPT — Speed over precision\nDeepSeek — Fast and Powerful model\n\nTap a model to begin →";
 
     let buttons = vec![
         vec![
@@ -601,7 +615,7 @@ async fn send_chat_model_rich_message(tg: &TelegramClient, chat_id: i64) {
         ],
     ];
 
-    let _ = tg.send_rich_message(chat_id, None, &text, Some(&buttons)).await;
+    let _ = tg.send_rich_html(chat_id, None, &html, plain_fallback, Some(&buttons)).await;
 }
 
 // ============ handle update ============
@@ -645,19 +659,15 @@ async fn handle_update(
         let group_title = message["chat"]["title"].as_str().unwrap_or("بدون عنوان");
         let group_username = message["chat"]["username"].as_str();
 
-        // ✅ **اصلاح‌شده**: قبل از ساخت لینک جدید، وجود لینک در دیتابیس را بررسی می‌کند
         let join_link: Option<String> = if let Some(uname) = group_username {
             Some(format!("https://t.me/{}", uname))
+        } else if let Ok(Some(existing)) = db::get_group_join_link(chat_id) {
+            // لینک از قبل ساخته شده؛ دوباره export نمی‌زنیم چون هر بار لینک قبلی را باطل می‌کند
+            Some(existing)
         } else {
-            let existing = db::get_group_join_link(chat_id).unwrap_or(None);
-            match existing {
-                Some(link) if !link.is_empty() => Some(link),
-                _ => {
-                    match tg.export_chat_invite_link(chat_id).await {
-                        Ok(v) => v["result"].as_str().map(|s| s.to_string()),
-                        Err(_) => None,
-                    }
-                }
+            match tg.export_chat_invite_link(chat_id).await {
+                Ok(v) => v["result"].as_str().map(|s| s.to_string()),
+                Err(_) => None,
             }
         };
 
@@ -667,6 +677,7 @@ async fn handle_update(
 
     let text_opt_early = message["text"].as_str().map(|s| s.to_string());
 
+    // /off و /on
     if let Some(text) = &text_opt_early {
         let trimmed = text.trim();
         if trimmed == "/off" && user_id == owner_id() {
@@ -685,7 +696,9 @@ async fn handle_update(
         return;
     }
 
+    // بررسی سکوت
     if let Ok(Some(until)) = db::is_muted(user_id) {
+        // توی گروه، فقط اگه کاربر صراحتاً ربات رو صدا زده، پیام بده.
         if is_group {
             if !is_directed_at_bot(message) {
                 return;
@@ -721,6 +734,7 @@ async fn handle_update(
     let text_opt = text_opt_early;
 
     if let Some(text) = &text_opt {
+        // /see
         if text.starts_with("/see") {
             if user_id != owner_id() {
                 return;
@@ -729,6 +743,7 @@ async fn handle_update(
             return;
         }
 
+        // /list
         if text.starts_with("/list") {
             if user_id != owner_id() {
                 return;
@@ -737,6 +752,7 @@ async fn handle_update(
             return;
         }
 
+        // /add
         if text.starts_with("/add ") || text == "/add" {
             if user_id != owner_id() {
                 return;
@@ -745,6 +761,7 @@ async fn handle_update(
             return;
         }
 
+        // /remove
         if text.starts_with("/remove ") || text == "/remove" {
             if user_id != owner_id() {
                 return;
@@ -753,6 +770,7 @@ async fn handle_update(
             return;
         }
 
+        // /ison / /isoff / /how
         if text.trim() == "/ison" {
             if user_id != owner_id() {
                 return;
@@ -777,6 +795,7 @@ async fn handle_update(
             return;
         }
 
+        // /deepseekoffshow / /gptoffshow / /gemenioffshow
         if text.trim() == "/deepseekoffshow" {
             if user_id != owner_id() {
                 return;
@@ -790,7 +809,7 @@ async fn handle_update(
                 return;
             }
             let _ = db::set_model_shown("groq", false);
-            let _ = tg.send_message(chat_id, "🔴 *GPT-OSS-120B* موقتاً از دسترس خارج شد.\n\nاگه کسی انتخابش کنه، بهش می‌گیم در دسترس نیست و از مدل جایگزین استفاده می‌کنه.").await;
+            let _ = tg.send_message(chat_id, "🔴 *GPT-OSS-20B* موقتاً از دسترس خارج شد.\n\nاگه کسی انتخابش کنه، بهش می‌گیم در دسترس نیست و از مدل جایگزین استفاده می‌کنه.").await;
             return;
         }
         if text.trim() == "/gemenioffshow" {
@@ -802,6 +821,7 @@ async fn handle_update(
             return;
         }
 
+        // /deepseekshowon / /gptshowon / /gemenishowon
         if text.trim() == "/deepseekshowon" {
             if user_id != owner_id() {
                 return;
@@ -815,7 +835,7 @@ async fn handle_update(
                 return;
             }
             let _ = db::set_model_shown("groq", true);
-            let _ = tg.send_message(chat_id, "🟢 *GPT-OSS-120B* دوباره در دسترس قرار گرفت.").await;
+            let _ = tg.send_message(chat_id, "🟢 *GPT-OSS-20B* دوباره در دسترس قرار گرفت.").await;
             return;
         }
         if text.trim() == "/gemenishowon" {
@@ -827,6 +847,7 @@ async fn handle_update(
             return;
         }
 
+        // /addadmin / /removeadmin / /ban / /unban
         if text.starts_with("/addadmin") {
             if user_id != owner_id() {
                 return;
@@ -959,6 +980,7 @@ async fn handle_update(
         }
 
         if let Some(model_id) = resolve_chat_model_id(trimmed) {
+            // چک: اگه مدل خاموشه
             if !db::is_model_shown(model_id) {
                 let alt = pick_alternative_model(model_id);
                 let active = db::get_active_chat(chat_id).unwrap_or(None);
@@ -1062,6 +1084,7 @@ async fn handle_update(
         }
     };
 
+    // اگه مدل ذخیره‌شده خاموشه، جایگزین کن
     if !db::is_model_shown(&model) {
         let alt = pick_alternative_model(&model).to_string();
         model = alt;
@@ -1134,6 +1157,7 @@ async fn handle_update(
     match result {
         Ok(sr) => {
             let _ = db::add_message(active.id, "assistant", &sr.full_text);
+            // ریچ: بعد از تحویل جواب، اگه بیشتر از حد آستانه بود، مرتب‌سازی انجام می‌شه
             ai::polish_and_send_rich(
                 http,
                 tg,
@@ -1449,12 +1473,12 @@ fn is_directed_at_bot(message: &Value) -> bool {
         .unwrap_or(false)
         && message["reply_to_message"]["from"]["username"]
             .as_str()
-            .map(|u| format!("@{}", u).to_lowercase() == bot_username().to_lowercase())
+            .map(|u| format!("@{}", u) == bot_username())
             .unwrap_or(false);
 
     let is_mentioned = message["text"]
         .as_str()
-        .map(|t| t.to_lowercase().contains(&bot_username().to_lowercase()))
+        .map(|t| t.contains(bot_username()))
         .unwrap_or(false);
 
     is_reply_to_bot || is_mentioned
@@ -1471,12 +1495,75 @@ async fn handle_group_message(
     user_message_id: i64,
     message: &Value,
 ) {
+    // ---------- محتوای پیام رو در برابر قفل‌ها چک کن (پاک‌سازی خودکار) ----------
+    // این باید قبل از هر چیز دیگه اجرا بشه، چون پیام‌های رسانه‌ای (عکس/ویدیو/استیکر/گیف)
+    // معمولاً فیلد text ندارند و نباید بی‌جهت از این چک رد بشن.
+    if let Some(_violated) = protection::should_delete(chat_id, user_id, message) {
+        let _ = tg.delete_message(chat_id, user_message_id).await;
+        return;
+    }
+
     let text_raw = match message["text"].as_str() {
         Some(t) => t,
         None => return,
     };
 
-    // ---------- سیستم مقام ----------
+    // ---------- ban/unban گروهی: دستور متنی با ریپلای، طبق همان فلسفه سرعت ----------
+    if let Some(target_msg) = reply_target {
+        let bare = text_raw.trim().trim_start_matches('/').to_lowercase();
+        if bare == "ban" {
+            let target_id = target_msg["from"]["id"].as_i64().unwrap_or(0);
+            let target_is_bot = target_msg["from"]["is_bot"].as_bool().unwrap_or(false);
+            if target_id != 0 && !target_is_bot {
+                let target_name = target_msg["from"]["first_name"].as_str().unwrap_or("کاربر");
+                let is_target_vip = db::is_vip(chat_id, target_id).unwrap_or(false);
+
+                let allowed = if is_target_vip {
+                    protection::can_ban_vip(chat_id, user_id)
+                } else {
+                    protection::can_moderate(chat_id, user_id, target_id)
+                };
+
+                if !allowed {
+                    let _ = tg.reply_message(chat_id, user_message_id, "You don't have permission to ban this member.").await;
+                    return;
+                }
+
+                match tg.ban_chat_member(chat_id, target_id).await {
+                    Ok(v) if v["ok"].as_bool() == Some(true) => {
+                        let _ = tg.reply_message(chat_id, user_message_id, &format!("🚫 {} has been banned.", target_name)).await;
+                    }
+                    _ => {
+                        let _ = tg.reply_message(chat_id, user_message_id, "⚠️ Couldn't ban this member. Make sure I'm an admin with ban permission.").await;
+                    }
+                }
+                return;
+            }
+        }
+        if bare == "unban" {
+            let target_id = target_msg["from"]["id"].as_i64().unwrap_or(0);
+            if target_id != 0 {
+                if !protection::can_moderate(chat_id, user_id, target_id)
+                    && !matches!(db::get_rank(chat_id, user_id), Ok(db::Rank::FirstOwner) | Ok(db::Rank::Owner) | Ok(db::Rank::Admin))
+                {
+                    let _ = tg.reply_message(chat_id, user_message_id, "You don't have permission to unban this member.").await;
+                    return;
+                }
+                let target_name = target_msg["from"]["first_name"].as_str().unwrap_or("کاربر");
+                match tg.unban_chat_member(chat_id, target_id).await {
+                    Ok(v) if v["ok"].as_bool() == Some(true) => {
+                        let _ = tg.reply_message(chat_id, user_message_id, &format!("✅ {} has been unbanned.", target_name)).await;
+                    }
+                    _ => {
+                        let _ = tg.reply_message(chat_id, user_message_id, "⚠️ Couldn't unban this member.").await;
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    // ---------- سیستم مقام: دستورهایی که باید ریپلای روی یک نفر باشند ----------
     let reply_target = message.get("reply_to_message");
     if let Some(target_msg) = reply_target {
         if let Some(rc) = protection::resolve_rank_command(text_raw) {
@@ -1501,15 +1588,17 @@ async fn handle_group_message(
         }
     }
 
-    // ---------- قفل‌ها ----------
+    // ---------- قفل‌ها: "lock link" / "llnk" و غیره، با یا بدون ریپلای ----------
     if let Some((is_lock, lock_type)) = protection::parse_lock_command(text_raw) {
         if let Some(target_msg) = reply_target {
+            // ریپلای روی یک نفر: محدودیت فردی
             let target_id = target_msg["from"]["id"].as_i64().unwrap_or(0);
             let target_is_bot = target_msg["from"]["is_bot"].as_bool().unwrap_or(false);
             if target_id != 0 && !target_is_bot {
                 let target_name = target_msg["from"]["first_name"].as_str().unwrap_or("کاربر");
 
                 if is_lock {
+                    // پارامتر دقیقه اختیاری بعد از دستور (مثلاً "llnk 60")
                     let minutes: Option<i64> = text_raw
                         .split_whitespace()
                         .last()
@@ -1531,6 +1620,7 @@ async fn handle_group_message(
                 return;
             }
         } else {
+            // بدون ریپلای: قانون کلی گروه
             let _ = db::set_group_lock(chat_id, lock_type, is_lock);
             let label = lock_type_label(lock_type);
             let msg = if is_lock {
@@ -1543,119 +1633,20 @@ async fn handle_group_message(
         }
     }
 
-    // ---------- بررسی محتوای ممنوعه ----------
-    if let Some(_violated) = protection::should_delete(chat_id, user_id, message) {
-        let _ = tg.delete_message(chat_id, user_message_id).await;
-        return;
-    }
-
     // ---------- "بات" -> "بله" ----------
     if protection::is_bare_bot_word(text_raw) {
         let _ = tg.reply_message(chat_id, user_message_id, "بله").await;
         return;
     }
 
-    // ---------- /ban و /unban ----------
-    let trimmed_text = text_raw.trim();
-
-    if trimmed_text.starts_with("/ban") {
-        let sender_rank = db::get_rank(chat_id, user_id).unwrap_or(db::Rank::Regular);
-        if !matches!(sender_rank, db::Rank::FirstOwner | db::Rank::Owner | db::Rank::Admin) {
-            return;
-        }
-
-        if let Some(target_msg) = reply_target {
-            let target_id = target_msg["from"]["id"].as_i64().unwrap_or(0);
-            let target_is_bot = target_msg["from"]["is_bot"].as_bool().unwrap_or(false);
-
-            if target_id == 0 || target_is_bot {
-                return;
-            }
-
-            let target_rank = db::get_rank(chat_id, target_id).unwrap_or(db::Rank::Regular);
-            if matches!(target_rank, db::Rank::FirstOwner | db::Rank::Owner) {
-                let _ = tg.reply_message(
-                    chat_id, user_message_id,
-                    "This user is an owner and cannot be banned."
-                ).await;
-                return;
-            }
-
-            if target_rank == db::Rank::Vip && !matches!(sender_rank, db::Rank::FirstOwner | db::Rank::Owner) {
-                let _ = tg.reply_message(
-                    chat_id, user_message_id,
-                    "Only owners can ban a VIP member."
-                ).await;
-                return;
-            }
-
-            let url = format!("https://api.telegram.org/bot{}/banChatMember", tg.token);
-            let body = json!({ "chat_id": chat_id, "user_id": target_id });
-
-            match tg.http.post(&url).json(&body).send().await {
-                Ok(resp) => {
-                    let v: Value = resp.json().await.unwrap_or(Value::Null);
-                    if v["ok"].as_bool() == Some(true) {
-                        let name = target_msg["from"]["first_name"].as_str().unwrap_or("User");
-                        let _ = tg.reply_message(
-                            chat_id, user_message_id,
-                            &format!("{} has been banned from this group.", name)
-                        ).await;
-                    } else {
-                        let desc = v["description"].as_str().unwrap_or("Unknown error");
-                        let _ = tg.reply_message(
-                            chat_id, user_message_id,
-                            &format!("Failed to ban: {}", desc)
-                        ).await;
-                    }
-                }
-                Err(e) => eprintln!("ban error: {}", e),
-            }
-        }
-        return;
-    }
-
-    if trimmed_text.starts_with("/unban") {
-        let sender_rank = db::get_rank(chat_id, user_id).unwrap_or(db::Rank::Regular);
-        if !matches!(sender_rank, db::Rank::FirstOwner | db::Rank::Owner | db::Rank::Admin) {
-            return;
-        }
-
-        let parts: Vec<&str> = trimmed_text.split_whitespace().collect();
-        if parts.len() != 2 {
-            return;
-        }
-
-        let target_id: i64 = match parts[1].parse() {
-            Ok(id) => id,
-            Err(_) => return,
-        };
-
-        let url = format!("https://api.telegram.org/bot{}/unbanChatMember", tg.token);
-        let body = json!({ "chat_id": chat_id, "user_id": target_id, "only_if_banned": true });
-
-        match tg.http.post(&url).json(&body).send().await {
-            Ok(resp) => {
-                let v: Value = resp.json().await.unwrap_or(Value::Null);
-                if v["ok"].as_bool() == Some(true) {
-                    let _ = tg.reply_message(
-                        chat_id, user_message_id,
-                        &format!("User {} has been unbanned.", target_id)
-                    ).await;
-                }
-            }
-            Err(e) => eprintln!("unban error: {}", e),
-        }
-        return;
-    }
-
-    // ---------- /model در گروه ----------
+    // /model توی گروه
     if text_raw.trim() == "/model" {
         let model_menu = format!(
             "🎯 *انتخاب مدل زبانی*\n\nلطفاً مدل مورد نظرت رو انتخاب کن:\n\n{}\n\n{}\n\n{}",
             MODEL_DESC_GEMINI, MODEL_DESC_DEEPSEEK, MODEL_DESC_GROQ
         );
 
+        // callback_data شامل user_id صاحب دکمه‌هاست تا فقط خودش بتونه کلیک کنه
         let buttons = vec![
             (
                 "🟢 Gemini 3.5 Flash Lite".to_string(),
@@ -1742,6 +1733,7 @@ async fn handle_group_message(
         return;
     }
 
+    // انتخاب مدل: اول مدل کاربر، بعد پیش‌فرض گروه. اگه خاموش بود، جایگزین.
     let user_model = db::get_user_group_model(user_id).unwrap_or(None);
     let group_model = db::get_group_model(DEFAULT_GROUP_MODEL).unwrap_or_else(|_| DEFAULT_GROUP_MODEL.to_string());
     let requested = user_model.unwrap_or(group_model);
@@ -1833,6 +1825,7 @@ async fn handle_group_message(
     }
 }
 
+/// برچسب انگلیسی نوع قفل برای پیام‌های خروجی
 fn lock_type_label(lock_type: &str) -> &'static str {
     protection::LOCK_TYPES
         .iter()
@@ -1841,6 +1834,7 @@ fn lock_type_label(lock_type: &str) -> &'static str {
         .unwrap_or("that content type")
 }
 
+/// زمان یونیکس فعلی (ثانیه) — بدون وابستگی به crate خارجی
 fn chrono_like_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
